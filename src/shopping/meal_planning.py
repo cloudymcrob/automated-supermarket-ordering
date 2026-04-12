@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date
 
 from shopping.models import (
     MealType,
-    PantryItem,
     Recipe,
     ScoredRecipe,
 )
@@ -14,24 +13,19 @@ from shopping.models import (
 
 def score_recipes(
     recipes: list[Recipe],
-    pantry: list[PantryItem],
     recent_recipe_names: list[str] | None = None,
     today: date | None = None,
 ) -> list[ScoredRecipe]:
     """Score and rank recipes for meal planning.
 
-    Scoring factors:
-    - Recency: recipes not cooked recently score higher
-    - Pantry overlap: recipes using available pantry ingredients score higher
-    - Rating: higher-rated recipes score higher
-    - Variety: bonus for undercooked recipes (low times_cooked)
-    - Quick meals get a bonus for lunch slots
+    Scoring is primarily recency-based — surface dishes not cooked recently.
+    The calling agent handles fridge/pantry awareness and creative selection
+    (cuisine variety, protein mix, cook style balance).
 
     Recipes containing allergens are excluded entirely.
     """
     today = today or date.today()
     recent = set(r.lower() for r in (recent_recipe_names or []))
-    pantry_ingredients = {p.ingredient_name.strip().lower() for p in pantry}
 
     scored: list[ScoredRecipe] = []
 
@@ -44,34 +38,18 @@ def score_recipes(
         score = 0.0
         reasons: list[str] = []
 
-        # --- Recency score (0-30 points) ---
+        # --- Recency (primary factor, 0-50 points) ---
         if recipe.name.lower() in recent:
-            score -= 20
-            reasons.append("Cooked in last 2-3 weeks (-20)")
+            score -= 30
+            reasons.append("Cooked in last 2-3 weeks (-30)")
         elif recipe.last_cooked:
             days_since = (today - recipe.last_cooked).days
-            if days_since > 30:
-                recency_bonus = min(30, days_since / 3)
-                score += recency_bonus
-                reasons.append(f"Not cooked for {days_since} days (+{recency_bonus:.0f})")
-            elif days_since > 14:
-                score += 10
-                reasons.append(f"Not cooked for {days_since} days (+10)")
+            recency_bonus = min(50, days_since / 2)
+            score += recency_bonus
+            reasons.append(f"Not cooked for {days_since} days (+{recency_bonus:.0f})")
         else:
-            # Never cooked — new recipe bonus
-            score += 25
-            reasons.append("Never cooked before (+25)")
-
-        # --- Pantry overlap (0-20 points) ---
-        if recipe.ingredients:
-            matching = sum(
-                1 for ing in recipe.ingredients
-                if ing.ingredient_name.strip().lower() in pantry_ingredients
-            )
-            overlap_score = min(20, matching * 4)
-            if overlap_score > 0:
-                score += overlap_score
-                reasons.append(f"{matching} pantry ingredients (+{overlap_score})")
+            score += 40
+            reasons.append("Never cooked before (+40)")
 
         # --- Rating (0-15 points) ---
         if recipe.rating:
@@ -82,18 +60,9 @@ def score_recipes(
         # --- Variety bonus for rarely cooked (0-10 points) ---
         if recipe.times_cooked <= 2:
             variety_bonus = 10 - (recipe.times_cooked * 3)
-            score += max(0, variety_bonus)
             if variety_bonus > 0:
+                score += variety_bonus
                 reasons.append(f"Cooked only {recipe.times_cooked}x (+{variety_bonus})")
-
-        # --- Quick meal bonus for lunches (0-10 points) ---
-        if MealType.LUNCH in recipe.meal_types:
-            if recipe.total_time_mins <= 15:
-                score += 10
-                reasons.append("Very quick lunch (+10)")
-            elif recipe.total_time_mins <= 30:
-                score += 5
-                reasons.append("Quick lunch (+5)")
 
         scored.append(ScoredRecipe(recipe=recipe, score=score, reasons=reasons))
 

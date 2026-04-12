@@ -17,14 +17,55 @@ All databases live under [Automated Shopping](https://www.notion.so/Automated-Sh
 | Regular Items | `collection://0d4931a0-e4bb-49ab-a81a-434f31812161` |
 | Order History | `collection://f0d2230e-73d9-4ace-a302-01415a50c8cc` |
 
+## Notes Columns
+
+Three databases have a **Notes** rich text column for contextual learnings:
+
+| Database | Notes Purpose |
+|----------|--------------|
+| Recipes | Recipe-level feedback (e.g. "too spicy", "great for batch cooking") |
+| Ingredients | General ingredient knowledge (e.g. "avoid own-brand", "frozen better value") |
+| Recipe Ingredients | Recipe-specific ingredient adjustments (e.g. "double the garlic here") |
+
+Notes are date-prefixed (e.g. `[2026-04-03] Too spicy — reduce chili`). The standalone **Learnings DB** is for general workflow preferences only.
+
+## Sub-Agent Architecture
+
+The `/weekly-shop` skill uses sub-agents for each phase. Agent prompts live in `.claude/agents/`:
+
+| Agent | File | Purpose |
+|-------|------|---------|
+| Recipe Sync | `recipe-sync.md` | Populate missing recipe ingredients/instructions from source URLs |
+| Recipe Scorer | `recipe-scorer.md` | Score and rank recipes, return top candidates |
+| Ingredient Calc | `ingredient-calc.md` | Aggregate ingredients programmatically, deduct pantry, sanity-check |
+| Tesco Basket | `tesco-basket.md` | Add items to Tesco basket via Chrome automation |
+| Basket Verifier | `basket-verifier.md` | Independent check that basket matches expected list |
+| Google Keep Reader | `google-keep-reader.md` | Read unchecked items from household shopping list |
+| DB Updater | `db-updater.md` | Update all Notion databases with workflow results and feedback |
+
+## Cooking Efficiency & Portion Model
+
+Every recipe has a **Cook Style** (Quick ≤40 min / Batch / Both) and two scaling fields:
+
+| Field | Default | Meaning |
+|-------|---------|---------|
+| `Quantity Multiplier` | 1.0 | Multiplies the recipe's stated ingredient amounts |
+| `Num Portions Per Quantity` | servings / 1.5 | Portions produced at multiplier=1 (adjusted via feedback) |
+
+- **Total portions** = `num_portions_per_quantity × quantity_multiplier`
+- **Meals covered** = `total_portions / 2` (for 2 people)
+- **Ingredient scaling** = recipe amounts × `quantity_multiplier`
+
+Typical week: 1-2 batch cooks (×2-3 multiplier, covers 3-4 days each) + quick meals for remaining days. Target ~3-5 cooking sessions, not 10.
+
 ## Household Profile
 
 - 2 people, large portions (~1.5x recipe servings)
 - Min 50g protein per serving; ~200g meat per serving if meat-based
 - Allergies: nuts, coconut, poppy seeds (direct ingredients only; "may contain" is fine)
 - Budget: ~£50/week, prefer value options
-- Lunches: simple, quick, high protein
-- Dinners: main planned meals
+- Lunches: batch-cooked for office days, or very quick
+- Dinners: mix of batch cooks and quick meals
 
 ## Python Utilities
 

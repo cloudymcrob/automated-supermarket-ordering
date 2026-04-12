@@ -11,6 +11,7 @@ from shopping.ingredients import (
     normalize_to_grams,
     normalize_to_ml,
     parse_ingredient_line,
+    standardize_for_storage,
     units_compatible,
 )
 from shopping.models import RecipeIngredient
@@ -196,11 +197,11 @@ class TestAggregateIngredients:
         assert result[0].unit == "g"
         assert result[0].quantity == 350
 
-    def test_servings_multiplier(self):
+    def test_quantity_multiplier(self):
         items = [
             RecipeIngredient("chicken breast", 200, "g", recipe_name="Stir Fry"),
         ]
-        result = aggregate_ingredients(items, servings_multiplier=1.5)
+        result = aggregate_ingredients(items, quantity_multiplier=1.5)
         assert result[0].quantity == 300
 
     def test_different_ingredients_kept_separate(self):
@@ -232,6 +233,55 @@ class TestAggregateIngredients:
         result = aggregate_ingredients(items)
         names = [r.ingredient_name for r in result]
         assert names == ["apple", "banana", "zucchini"]
+
+
+class TestStandardizeForStorage:
+    def test_grams_stay_grams(self):
+        assert standardize_for_storage(200, "grams") == (200, "g")
+
+    def test_kg_stays_kg(self):
+        assert standardize_for_storage(1.5, "kg") == (1.5, "kg")
+
+    def test_large_grams_become_kg(self):
+        assert standardize_for_storage(1500, "g") == (1.5, "kg")
+
+    def test_ml_stays_ml(self):
+        assert standardize_for_storage(500, "ml") == (500, "ml")
+
+    def test_litres_become_l(self):
+        assert standardize_for_storage(2, "litres") == (2, "l")
+
+    def test_cups_to_ml(self):
+        assert standardize_for_storage(2, "cups") == (480, "ml")
+
+    def test_oz_to_g(self):
+        assert standardize_for_storage(8, "oz") == (226.8, "g")
+
+    def test_lb_to_g(self):
+        assert standardize_for_storage(2, "pounds") == (907.2, "g")
+
+    def test_tsp_preserved(self):
+        assert standardize_for_storage(1, "tsp") == (1, "tsp")
+
+    def test_tbsp_preserved(self):
+        assert standardize_for_storage(2, "tbsp") == (2, "tbsp")
+
+    def test_teaspoon_canonicalised_and_preserved(self):
+        assert standardize_for_storage(0.5, "teaspoons") == (0.5, "tsp")
+
+    def test_countable_canonicalised(self):
+        assert standardize_for_storage(3, "cloves") == (3, "clove")
+
+    def test_whole_unchanged(self):
+        assert standardize_for_storage(1, "whole") == (1, "whole")
+
+    def test_can_unchanged(self):
+        assert standardize_for_storage(2, "can") == (2, "can")
+
+    def test_rounding(self):
+        qty, unit = standardize_for_storage(1.666, "kg")
+        assert qty == 1.7
+        assert unit == "kg"
 
 
 class TestFormatQuantity:

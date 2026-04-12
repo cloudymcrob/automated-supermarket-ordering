@@ -145,6 +145,38 @@ def convert_to_common_unit(quantity: float, unit: str) -> tuple[float, str]:
     return quantity, canon
 
 
+def standardize_for_storage(quantity: float, unit: str) -> tuple[float, str]:
+    """Normalise a quantity and unit to the canonical metric storage format.
+
+    - Weights -> g (or kg if >= 1000g)
+    - Volumes -> ml (or l if >= 1000ml), but tsp/tbsp are preserved as-is
+    - Countable units are preserved as-is
+    - Quantities are rounded to 1 decimal place
+    """
+    canon = canonicalize_unit(unit)
+
+    # Preserve tsp/tbsp — they're practical small measures
+    if canon in ("tsp", "tbsp"):
+        return round(quantity, 1), canon
+
+    # Weight -> g / kg
+    grams = normalize_to_grams(quantity, canon)
+    if grams is not None:
+        if grams >= 1000:
+            return round(grams / 1000, 1), "kg"
+        return round(grams, 1), "g"
+
+    # Volume -> ml / l
+    ml = normalize_to_ml(quantity, canon)
+    if ml is not None:
+        if ml >= 1000:
+            return round(ml / 1000, 1), "l"
+        return round(ml, 1), "ml"
+
+    # Countable / unknown -> pass through with canonical unit
+    return round(quantity, 1), canon
+
+
 def format_quantity(quantity: float, unit: str) -> str:
     """Format a quantity nicely for display."""
     if quantity == int(quantity):
@@ -273,12 +305,12 @@ class AggregatedIngredient:
 
 def aggregate_ingredients(
     recipe_ingredients: list[RecipeIngredient],
-    servings_multiplier: float = 1.0,
+    quantity_multiplier: float = 1.0,
 ) -> list[AggregatedIngredient]:
     """Aggregate a list of recipe ingredients, combining duplicates.
 
     Converts compatible units to a common base before summing.
-    Applies the servings_multiplier to all quantities.
+    Applies the quantity_multiplier to all quantities.
     """
     # Group by normalised ingredient name
     groups: dict[str, list[RecipeIngredient]] = {}
@@ -296,7 +328,7 @@ def aggregate_ingredients(
         primary_unit = canonicalize_unit(items[0].unit)
 
         for item in items:
-            qty = item.quantity * servings_multiplier
+            qty = item.quantity * quantity_multiplier
             canon = canonicalize_unit(item.unit)
 
             grams = normalize_to_grams(qty, canon)

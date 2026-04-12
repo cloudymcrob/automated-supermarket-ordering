@@ -54,6 +54,12 @@ class Frequency(Enum):
     AS_NEEDED = "As Needed"
 
 
+class CookStyle(Enum):
+    QUICK = "Quick"    # ≤40 min start to finish
+    BATCH = "Batch"    # Multiple portions, leftovers/freeze
+    BOTH = "Both"      # Quick but scales well for batch
+
+
 # Allergens that must be excluded from direct ingredients
 ALLERGENS = frozenset({"nuts", "coconut", "poppy seeds"})
 
@@ -78,6 +84,7 @@ class Ingredient:
     shelf_life_days: int | None = None
     is_staple: bool = False
     aliases: list[str] = field(default_factory=list)
+    notes: str = ""
     notion_id: str | None = None
 
 
@@ -90,6 +97,7 @@ class RecipeIngredient:
     preparation: str = ""
     optional: bool = False
     recipe_name: str = ""
+    notes: str = ""
 
 
 @dataclass
@@ -99,7 +107,9 @@ class Recipe:
     cuisine: str = ""
     meal_types: list[MealType] = field(default_factory=lambda: [MealType.DINNER])
     servings: int = 2
-    actual_portions: float | None = None
+    num_portions_per_quantity: float | None = None
+    quantity_multiplier: float = 1.0
+    cook_style: CookStyle = CookStyle.QUICK
     prep_time_mins: int = 0
     cook_time_mins: int = 0
     last_cooked: date | None = None
@@ -107,22 +117,38 @@ class Recipe:
     rating: int | None = None
     tags: list[str] = field(default_factory=list)
     active: bool = True
+    source_url: str = ""
+    instructions: str = ""
     ingredients: list[RecipeIngredient] = field(default_factory=list)
+    notes: str = ""
     notion_id: str | None = None
 
     @property
-    def total_time_mins(self) -> int:
-        return self.prep_time_mins + self.cook_time_mins
+    def total_time_mins(self) -> int | None:
+        if self.prep_time_mins is None and self.cook_time_mins is None:
+            return None
+        return (self.prep_time_mins or 0) + (self.cook_time_mins or 0)
 
     @property
-    def servings_multiplier(self) -> float:
-        """How much to scale recipe. Uses actual_portions feedback if available,
-        otherwise defaults to 1.5x for 2 people with large portions."""
-        if self.actual_portions is not None and self.actual_portions > 0:
-            # If we know the recipe makes X portions, scale to get 2 large portions
-            # Target: 3 portions worth (2 people * 1.5x)
-            return 3.0 / self.actual_portions
-        return 1.5
+    def effective_portions_per_quantity(self) -> float:
+        """Portions produced at quantity_multiplier=1.
+
+        Uses feedback value if set, otherwise defaults to servings / 1.5
+        (accounting for large portion sizes).
+        """
+        if self.num_portions_per_quantity is not None and self.num_portions_per_quantity > 0:
+            return self.num_portions_per_quantity
+        return self.servings / 1.5
+
+    @property
+    def total_portions(self) -> float:
+        """Total portions produced at the current quantity_multiplier."""
+        return self.effective_portions_per_quantity * self.quantity_multiplier
+
+    @property
+    def meals_covered(self) -> int:
+        """How many meals (for 2 people) this recipe covers."""
+        return max(1, round(self.total_portions / 2))
 
     def contains_allergen(self) -> bool:
         """Check if any ingredient directly contains a known allergen."""
@@ -186,4 +212,7 @@ class MealPlanEntry:
     recipe: Recipe
     day: str  # Monday, Tuesday, etc.
     meal: MealType
-    servings_multiplier: float = 1.5
+    quantity_multiplier: float = 1.0
+    cook_style: CookStyle = CookStyle.QUICK
+    days_covered: int = 1
+    is_leftover: bool = False

@@ -3,23 +3,28 @@ name: weekly-shop
 description: Run the weekly supermarket shopping workflow — selects recipes, calculates ingredients, checks pantry, builds a Tesco basket via Chrome browser automation, reads the Google Keep shopping list, and sends a Slack review DM. Use this skill whenever the user says "weekly shop", "do the shopping", "meal plan", "what should we cook this week", "what's for dinner", "order groceries", "Tesco order", "shopping list", "grocery list", "plan meals", "do the Tesco shop", or anything related to planning meals and ordering groceries for the week. Also trigger when the user mentions specific phases like "add items to Tesco", "check the pantry", "what do we need from the shops", or "build the basket". Even casual prompts like "food for next week?" or "can you sort the shopping" should trigger this skill.
 ---
 
-You are running the weekly supermarket shopping workflow for Robbie.
+# Weekly Shop — Orchestrator
 
-This workflow has 8 phases. If the user specifies a phase to start from (e.g. "start from Phase 5"), skip to that phase. Otherwise, start from Phase 1.
+You are running the weekly supermarket shopping workflow for Robbie. This workflow uses **sub-agents** for heavy lifting — your job is to coordinate them, handle user interaction, and thread data between phases.
 
-## Household Profile
+**If the user specifies a phase to start from (e.g. "start from Phase 4"), skip to that phase.** You'll need to ask the user for any data that prior phases would have produced.
 
-- 2 people, large portions
-- Default servings multiplier: 1.5x (override with Actual Portions from recipe if available)
-- Minimum 50g protein per serving; ~200g meat per serving if protein is mainly from meat
-- **Allergies**: nuts, coconut, poppy seeds — check direct ingredients only. "May contain" warnings are fine.
-- Budget: ~£50/week. Prefer value/own-brand Tesco options unless preferences say otherwise.
-- Lunches: simple, quick (under 15-30 mins), high protein, no-cook or quick-cook
-- Dinners: main planned meals, more variety allowed
+## Shared Context
 
-## Notion Data Sources
+### Household Profile
+- 2 people, large portions (~1.5x recipe servings)
+- Min 50g protein per serving; ~200g meat per serving if meat-based
+- Allergies: nuts, coconut, poppy seeds (direct ingredients only; "may contain" is fine)
+- Budget: ~£50/week, prefer value/own-brand options
+- **Cooking efficiency**: limited time, cook as efficiently as possible
+  - Every dish is either **Quick** (≤40 min start to finish), **Batch** (bulk cook for multiple days/freeze), or **Both**
+  - Typical week: 1-2 batch cooks covering 3-4 days each, quick meals for remaining days
+  - Target: ~3-5 cooking sessions per week, NOT 10 separate meals
+- Lunches: batch-cooked for office days (portable, reheatable), or very quick
+- Dinners: mix of batch cooks and quick meals
+- **Scaling**: each recipe has a `quantity_multiplier` (stored in Recipes DB). Ingredients = recipe amounts × multiplier. Quick meals typically ×1, batch cooks ×2-3.
 
-Use `mcp__792c926c-2a2b-479f-8cd0-5959ff5aebc2__notion-query-data-sources` to query and `mcp__792c926c-2a2b-479f-8cd0-5959ff5aebc2__notion-create-pages` / `mcp__792c926c-2a2b-479f-8cd0-5959ff5aebc2__notion-update-page` to write.
+### Notion Data Source IDs
 
 | Database | Data Source ID |
 |----------|---------------|
@@ -34,281 +39,222 @@ Use `mcp__792c926c-2a2b-479f-8cd0-5959ff5aebc2__notion-query-data-sources` to qu
 | Regular Items | `collection://0d4931a0-e4bb-49ab-a81a-434f31812161` |
 | Order History | `collection://f0d2230e-73d9-4ace-a302-01415a50c8cc` |
 
-## Python Utilities
+### Slack
+Robbie's Slack user ID: `U093RE9TDV4`. DM him directly.
 
-These live in `src/shopping/` within the project. Run via Bash from the project root.
+### Pipeline Issue Tracking
+Throughout every phase, keep a running log of **all issues encountered** — even ones you found workarounds for. Record:
+- What went wrong
+- Which phase/agent it occurred in
+- How it was resolved (or if it remains unresolved)
+- Suggestions for improving the workflow to avoid this in future
 
-- `models.py` — `Recipe` (has `meal_types: list[MealType]`, `servings_multiplier` property, `contains_allergen()` method), `RecipeIngredient`, `PantryItem`, `ShoppingListItem`, `RegularItem`, `ScoredRecipe`, `MealPlanEntry`
-- `ingredients.py` — `parse_ingredient_line(text) -> RecipeIngredient`, `aggregate_ingredients(recipe_ingredients, servings_multiplier) -> list[AggregatedIngredient]`
-- `pantry.py` — `deduct_pantry(needed, pantry) -> list[ShoppingListItem]`, `update_pantry_after_cooking(pantry, used) -> list[PantryItem]`
-- `meal_planning.py` — `score_recipes(recipes, pantry, recent_recipe_names, today) -> list[ScoredRecipe]`, `select_weekly_meals(scored_recipes, num_dinners=5, num_lunches=5) -> dict[str, list[ScoredRecipe]]` (returns `{"dinners": [...], "lunches": [...]}`)
-- `shopping_list.py` — `check_regular_items(regular_items, today) -> list[RegularItem]`, `format_shopping_list(items, group_by_category) -> str`, `estimate_budget(items) -> str`
-
-## Slack
-
-Robbie's Slack user ID is `U093RE9TDV4`. DM him directly without needing to look up the ID.
+This log is used in Phase 7 for the pipeline health report.
 
 ---
 
-## Phase 1: Recipe Selection
+## Phase 0 — Recipe Data Sync
 
-**Goal**: Choose ~5 dinners and ~5 lunches for the week.
+### 0a. Launch recipe-sync agent
 
-### Step 1a: Load context
+Read `.claude/agents/recipe-sync.md` and launch a **general-purpose Agent** with that prompt.
 
-Query the Learnings DB for all active learnings — these are preferences and feedback from previous weeks that should influence your selections:
+This ensures all active recipes have their ingredients and instructions populated in Notion before the workflow proceeds. Without this, the ingredient-calc agent may encounter recipes with no ingredient data.
 
-```sql
-SELECT * FROM "collection://b1e318ba-3e4d-46d6-8749-ca166e60925c"
-WHERE "Active" = '__YES__'
-```
+The agent will return a sync report. If any recipes failed to sync, note them — they may cause issues in later phases.
 
-Read and internalise all learnings before proceeding.
+### 0b. Review sync results
 
-### Step 1b: Get recipes and recent history
-
-Query active recipes:
-```sql
-SELECT * FROM "collection://c484fc86-6058-4c7c-9c82-af7d9830b1db"
-WHERE "Active" = '__YES__'
-```
-
-Query recent meal plan entries (last 3 weeks) to avoid repeats:
-```sql
-SELECT * FROM "collection://a16f20fc-a485-4f7d-8199-378cc6d65edc"
-ORDER BY createdTime DESC LIMIT 30
-```
-
-### Step 1c: Score and select
-
-**Converting Notion data to Python objects**: The Notion `Meal Type` field is a multi-select stored as a JSON string like `["Dinner"]` or `["Lunch", "Dinner"]`. When constructing `Recipe` objects, parse this with `json.loads()` and map to `MealType` enum values. Similarly, `Tags` is a JSON array of strings. The `Rating` field is a select stored as a string ("1" through "5") — convert to `int`. The `Active` field uses `"__YES__"` / `"__NO__"`.
-
-Use the Python scoring utility to rank recipes. The scorer considers:
-- Recipes not cooked recently (0-30 points)
-- Recipes that use ingredients already in the pantry (0-20 points)
-- Cuisine variety across the week (0-10 points)
-- Higher-rated recipes (0-15 points)
-- Quick/simple recipes for lunch slots (0-10 points)
-
-It automatically filters out recipes containing allergen keywords.
-
-`select_weekly_meals()` returns `{"dinners": [...], "lunches": [...]}`. It uses a 4-pass strategy: dinner-only recipes first, then lunch-only, then dual-type recipes fill whichever slot needs more, then any remaining slots get the best remaining recipes.
-
-### Step 1d: Present to user
-
-Present your suggestions in a clear format:
-
-```
-**Dinners**
-- Monday: Chicken Stir Fry (last cooked 3 weeks ago, uses pantry rice)
-- Tuesday: Beef Bolognese (highly rated, batch cook potential)
-...
-
-**Lunches**
-- Monday-Friday: Quick Chicken Wraps (10 min, high protein)
-...
-```
-
-**WAIT FOR USER CONFIRMATION.** The user may swap recipes, add constraints, or approve as-is.
-
-### Step 1e: Create meal plan in Notion
-
-After confirmation, create a new Meal Plan entry and individual Meal Plan Entries for each day/meal.
+If the agent reports failures or recipes with no Source URL, note them in the pipeline issue log. These recipes can still be selected in Phase 1 but may need manual ingredient entry in Phase 2.
 
 ---
 
-## Phase 2: Ingredient Calculation
+## Phase 1 — Recipe Selection
 
-**Goal**: Aggregate all ingredients needed across every selected recipe.
+### 1a. Launch recipe-scorer agent
 
-### Step 2a: Get recipe ingredients
+Read the agent prompt from `.claude/agents/recipe-scorer.md` and launch a **general-purpose Agent** with that prompt.
 
-Query Recipe Ingredients for each selected recipe:
-```sql
-SELECT * FROM "collection://f59cef18-fcbf-448c-91f2-a8f2aada5b8d"
-WHERE "Recipe" LIKE '%<recipe_page_url>%'
+The agent will return scored candidate lists (top 20 dinners, top 20 lunches) with Notes excerpts.
+
+### 1b. Build a cooking schedule
+
+From the candidates the agent returned, build a **cooking schedule** — not a list of individual meals. The goal is to cover 7 dinner-days and 5 lunch-days with as few cooking sessions as possible.
+
+**Dinner planning (7 days):**
+1. Pick 1-2 **batch** dinner recipes. Use each recipe's `meals_covered` value (derived from `quantity_multiplier` × `num_portions_per_quantity / 2`) to know how many days it covers.
+2. Fill remaining days with **quick** dinner recipes (each covers 1 day).
+3. Prefer recipes that use fridge ingredients flagged by the scorer.
+4. Verify batch + quick days sum to ~7.
+
+**Lunch planning (5 weekdays):**
+1. Pick 1-2 **batch** lunch recipes. These should be office-friendly (portable, reheatable).
+2. Each batch lunch covers 3-5 days.
+3. Optionally add 1-2 quick lunches for variety.
+
+**Selection rules:**
+1. **No duplicate cuisines** across dinners. Same for lunches.
+2. **No near-duplicate dishes** (e.g. Bolognese + Jerk lentil bolognese = too similar).
+3. **Protein variety** — at least 2-3 different proteins across dinners.
+4. **Use up fridge ingredients** — prefer recipes flagged by the scorer as using perishable items.
+5. **Apply Notes and Learnings** — skip recipes with negative Notes, prefer those with positive Notes.
+
+### 1c. Present to user
+
+```
+🍽️ **Dinner Plan** (X cooking sessions)
+
+Batch cooks:
+- Beef Chili ×3 (8 portions → Mon–Thu dinners)
+
+Quick cooks:
+- Chicken Stir Fry (Fri, 20 min) — uses fridge chicken
+- Fish Tacos (Sat, 25 min)
+- Omelette (Sun, 15 min)
+
+🥗 **Lunch Plan** (X cooking sessions)
+
+Batch cook:
+- Chicken & Rice Bowls ×2 (8 portions → Mon–Thu)
+
+Quick:
+- Wraps (Fri, 10 min)
+
+📊 Cooking sessions: X | Fridge items used: Y
 ```
 
-**If a recipe has no ingredients in the DB** (this is common — many recipes were imported without ingredient data), check if the recipe has a `Source URL`. If it does, use `mcp__Claude_in_Chrome__navigate` and `mcp__Claude_in_Chrome__get_page_text` to fetch the recipe page and extract the ingredient list. Use `parse_ingredient_line()` to parse each ingredient. Then save the parsed ingredients back to the Recipe Ingredients DB so they're available for future runs.
+**WAIT FOR USER CONFIRMATION.** The user may swap recipes, adjust multipliers, or approve as-is.
 
-If there's no Source URL either, ask the user for the ingredient list or skip the recipe.
+### 1d. Create meal plan in Notion
 
-### Step 2b: Aggregate
-
-Use the Python `aggregate_ingredients()` function to:
-- Normalise units (g, ml, whole, etc.)
-- Sum quantities across all recipes
-- Apply servings multiplier (check each recipe's "Actual Portions" field — if set, use `3.0 / actual_portions` as multiplier; otherwise default to 1.5x)
-
-### Step 2c: Check regular items
-
-Query Regular Items DB for items due:
-```sql
-SELECT * FROM "collection://0d4931a0-e4bb-49ab-a81a-434f31812161"
-WHERE "Auto Add" = '__YES__'
-```
-
-Use `check_regular_items()` to determine which are due based on frequency and last ordered date. Add due items to the ingredient list.
-
-### Step 2d: Output
-
-Present the complete ingredient list grouped by category.
+After confirmation, create a new Meal Plan entry and individual Meal Plan Entries for each day/meal. For batch cooks, create one entry for the cooking day and mark subsequent days as leftovers.
 
 ---
 
-## Phase 3: Pantry Check
+## Phase 2 — Ingredients & Shopping List
 
-**Goal**: Subtract what's already in the house from what's needed.
+### 2a. Launch ingredient-calc agent
 
-### Step 3a: Get pantry inventory
+Read `.claude/agents/ingredient-calc.md` and launch a **general-purpose Agent** with that prompt.
 
-```sql
-SELECT * FROM "collection://8639fbc8-fd73-4933-8e29-24c4a7ae3d07"
-WHERE "Status" != 'Out' AND "Status" != 'Expired'
-```
+Include in the agent prompt:
+- The confirmed recipe list (names, Notion page URLs, quantity multipliers)
+- Any user notes from Phase 1 (e.g. "make extra stir fry for leftovers" → adjust multiplier)
 
-### Step 3b: Deduct
+The agent will return: aggregated shopping list, pantry assumptions, budget estimate, and sanity-check flags.
 
-Use `deduct_pantry()` to subtract pantry quantities from needed quantities. This handles unit conversion (e.g. 500g pantry rice vs 1.5kg needed = 1kg to buy).
-
-### Step 3c: Generate shopping list
-
-The output is the "need to buy" list — only items where the needed quantity exceeds what's in the pantry.
-
----
-
-## Phase 4: Human Verification
-
-**Goal**: Confirm pantry assumptions and finalise the shopping list before ordering.
-
-Present to the user:
+### 2b. Present to user
 
 ```
 **Pantry assumptions** (please correct any that are wrong):
-- Rice: I think you have 500g → need 1.5kg → buying 1kg ✓
-- Olive oil: I think you have a full bottle → not buying ✓
-- Chicken breast: not in pantry → buying 900g
+- Rice: have 500g → need 1.5kg → buying 1kg ✓
+- Olive oil: have full bottle → not buying ✓
+...
 
 **Shopping list** (X items):
 [formatted list grouped by category]
 
 **Budget estimate**: ~£XX (target: £50)
 
-Does this look right? Please correct any wrong pantry assumptions.
+**Sanity check flags**:
+- ⚠️ 675g chicken breast — verify across 3 recipes
+...
 ```
 
 **WAIT FOR USER RESPONSE.** Apply any corrections:
-- Update Pantry Inventory in Notion for corrected items
-- Recalculate the shopping list if pantry quantities changed
+- If pantry quantities are wrong, note the corrections (the db-updater agent will update Notion later)
+- If items should be added/removed, adjust the list
+- Recalculate budget estimate if the list changed significantly
 
 ---
 
-## Phase 5: Tesco Basket Building
+## Phase 3 — Tesco Basket
 
-**Goal**: Add all shopping list items to the Tesco online basket.
+### 3a. Gather preferences
 
-### Step 5a: Open Tesco and check login
-
-Use `mcp__Claude_in_Chrome__navigate` to go to `https://www.tesco.com/groceries/`.
-
-Use `mcp__Claude_in_Chrome__read_page` to check if the user is logged in (look for "Sign out" or "My account" in the nav, or a greeting like "Hello Robert"). If not logged in:
-
-1. Click "Sign in"
-2. Enter email `robbiemcleod10@hotmail.co.uk` and click Next
-3. On the password page, scroll down and click **"Sign in with One-time code"**
-4. Tesco sends a 6-digit code to the email
-5. Open Outlook (`https://outlook.live.com/mail/`) in a new tab to retrieve the code
-6. Enter the code on the Tesco page and submit
-7. Verify login succeeded (look for "Hello Robert" or "Sign out")
-
-### Step 5b: Dismiss any popups
-
-After navigating to Tesco, check for and dismiss any cookie consent banners or promotional popups that might block interaction. Use `mcp__Claude_in_Chrome__find` to look for "Accept" or "Close" buttons on overlays.
-
-### Step 5c: Check preferences
-
-Before searching for each item, query Shopping Preferences:
+Query Shopping Preferences for all items on the shopping list:
 ```sql
 SELECT * FROM "collection://e9cccfe4-5e5a-45bc-815d-19ef94719e4e"
-WHERE "Item" = '<ingredient_name>'
 ```
 
-Use the Tesco Search Term if available; otherwise search by ingredient name.
+Also query Ingredients DB for relevant Notes:
+```sql
+SELECT * FROM "collection://c335d5eb-d770-40e7-8386-fea913fa5f74"
+```
 
-### Step 5d: Add items to basket
+### 3b. Launch tesco-basket agent
 
-For each shopping list item:
+Read `.claude/agents/tesco-basket.md` and launch a **general-purpose Agent** with that prompt.
 
-1. **Search**: Click the search bar, clear any previous text, type the search term, press Enter. Wait for results to load.
+Include in the agent prompt:
+- The confirmed shopping list (items, quantities, units)
+- Shopping Preferences for each item (preferred brand, Tesco search term, price sensitivity)
+- Relevant Ingredient Notes (brand advice, product form preferences)
 
-2. **Select product**: Use `mcp__Claude_in_Chrome__read_page` to read search results. Choose the best product considering:
-   - Preferred brand from Shopping Preferences (if set)
-   - Price sensitivity (default: Cheapest / value options)
-   - Closest quantity match to what's needed (avoid waste)
-   - Compare £/kg or £/unit prices, not just headline prices
-   - Avoid "out of stock" items
+The agent will return a per-item report of successes and failures.
 
-3. **Add to basket**: Find and click the "Add" button for the chosen product. If you need more than 1, use the "+" button to increase quantity.
+### 3c. Launch basket-verifier agent
 
-4. **Verify**: Check the basket total in the top-right corner updated.
+Read `.claude/agents/basket-verifier.md` and launch a **general-purpose Agent** with that prompt.
 
-Add a ~2 second wait between items to avoid overwhelming the page.
+Include in the agent prompt:
+- The expected shopping list (same as sent to tesco-basket)
+- The tesco-basket agent's report (for cross-reference)
 
-Track which items succeeded and which failed (not found / out of stock).
+The agent will return a verification report.
 
-### Step 5e: Review basket
+### 3d. Resolve discrepancies
 
-Navigate to the basket page. Use `mcp__Claude_in_Chrome__get_page_text` to capture the basket summary including items and total price.
+If the basket-verifier found issues:
+- **Missing items**: re-launch the **tesco-basket agent** with just the missing items
+- **Wrong quantities**: re-launch tesco-basket with quantity corrections (e.g. "increase rice to qty 2")
+- **Unexpected extras**: flag to the user — they may be items from a previous session
+- **Substitution concerns**: flag to the user for approval
 
-Report any items that couldn't be found or were out of stock.
-
----
-
-## Phase 6: Google Keep Extras
-
-**Goal**: Check for additional items on the Google Keep shopping list.
-
-### Step 6a: Open Google Keep
-
-Use `mcp__Claude_in_Chrome__navigate` to go to `https://keep.google.com/`.
-
-### Step 6b: Find shopping list
-
-Use `mcp__Claude_in_Chrome__read_page` to locate the **"Household shopping list"** note (it's pinned and shared with anna main). Read the unchecked items — these are the items that need buying.
-
-### Step 6c: Present and add items
-
-Present the Keep items to the user and ask which to add. For confirmed items:
-- Search on Tesco and add to basket (same flow as Phase 5)
-
-### Step 6d: Confirm
-
-**WAIT FOR USER CONFIRMATION.** Tell the user what Keep items were found and added.
+After fixes, optionally re-launch basket-verifier to confirm.
 
 ---
 
-## Phase 7: Slack Review
+## Phase 4 — Google Keep
 
-**Goal**: Send the user a summary for final review before checkout.
+### 4a. Launch google-keep-reader agent
 
-### Step 7a: Compile summary
+Read `.claude/agents/google-keep-reader.md` and launch a **general-purpose Agent** with that prompt.
 
-Build a message containing:
-- This week's meal plan (dinners + lunches by day)
-- Full basket contents with quantities and prices (from the Tesco basket)
-- Any items that couldn't be found
-- Estimated total vs budget
-- Regular items included
+The agent will return the list of unchecked items from the "Household shopping list".
 
-### Step 7b: Send to Robbie
+### 4b. Present to user
 
-Use `mcp__659504af-dc5f-4c06-81db-d846567cc8ef__slack_send_message` to DM Robbie at user ID `U093RE9TDV4`:
+```
+**Google Keep items found:**
+- Kitchen roll
+- Bin bags
+- Bananas
+...
+
+Which of these should I add to the Tesco basket?
+```
+
+**WAIT FOR USER CONFIRMATION.**
+
+### 4c. Add confirmed Keep items to Tesco
+
+Re-launch the **tesco-basket agent** with the confirmed Keep items. Include any relevant Shopping Preferences or Ingredient Notes for those items.
+
+---
+
+## Phase 5 — Slack Review
+
+### 5a. Compile summary
+
+Build a comprehensive summary from all phases:
 
 ```
 🛒 *Weekly Shop — w/c [date]*
 
 *🍽️ Dinners*
 • Mon: [recipe] _(cuisine)_
+• Tue: [recipe] _(cuisine)_
 ...
 
 *🥗 Lunches*
@@ -322,44 +268,97 @@ Use `mcp__659504af-dc5f-4c06-81db-d846567cc8ef__slack_send_message` to DM Robbie
 ✅ _Reply with changes or "looks good" to proceed._
 ```
 
-### Step 7c: Process feedback
+### 5b. Send to Robbie
 
-If the user responds with changes (in the current conversation or via Slack):
-- Apply substitutions/removals/additions on Tesco via Chrome MCP
-- Record any preference feedback:
-  - Brand preferences → update Shopping Preferences DB
-  - Dish likes/dislikes → create Learnings entry
-  - Portion feedback → update Actual Portions in Recipes DB
+Use Slack MCP to DM Robbie at user ID `U093RE9TDV4`.
+
+### 5c. Process feedback
+
+If the user responds with changes:
+- Apply substitutions/removals/additions on Tesco via the tesco-basket agent
+- Note all feedback for the db-updater agent (recipe feedback → Notes, brand preferences → Shopping Preferences, etc.)
 
 ---
 
-## Phase 8: Finalize
+## Phase 6 — Finalize
 
-**Goal**: Wrap up and update all tracking databases.
-
-### Step 8a: Confirm ready
+### 6a. Confirm ready
 
 Tell the user: "Your basket is ready for checkout. I've left the Tesco tab open — you can choose a delivery slot and place the order."
 
-### Step 8b: Update databases
+### 6b. Launch db-updater agent
 
-1. **Order History**: Create new entry with date, item count, estimated total, status = "Draft"
-2. **Pantry Inventory**: Add ordered items (expected to arrive), deduct items that will be used by the meal plan
-3. **Regular Items**: Update "Last Ordered" date for any regular items included
-4. **Recipes**: Update "Last Cooked" date and increment "Times Cooked" for selected recipes
-5. **Meal Plan**: Set status to "Active"
+Read `.claude/agents/db-updater.md` and launch a **general-purpose Agent** with that prompt.
 
-### Step 8c: Portion follow-up reminder
+Include in the agent prompt:
+- Meal plan details (recipes, day assignments, Notion IDs)
+- Final shopping list
+- Basket contents (products, prices, quantities)
+- Regular items that were ordered
+- All user feedback collected during the workflow
+- Any issues encountered
 
-After the meals are cooked during the week, follow up to ask: "How many portions did [recipe] actually make?" Update the Actual Portions field in the Recipes DB and create a Portion Feedback learning in the Learnings DB.
+### 6c. Portion follow-up reminder
+
+Remind the user: "After cooking this week, let me know how many portions each recipe actually made — I'll update the recipes so future quantities are more accurate."
+
+---
+
+## Phase 7 — Pipeline Health Report
+
+### 7a. Compile pipeline issues
+
+Review your running issue log from all phases. For each issue, categorise it:
+
+| Category | Examples |
+|----------|---------|
+| **Agent failure** | Agent crashed, returned incomplete data, needed retry |
+| **Data quality** | Recipe missing ingredients, wrong Notion data, stale pantry |
+| **Tesco automation** | Login failed, product not found, wrong product added |
+| **User corrections** | Pantry assumptions wrong, quantities adjusted, items added/removed |
+| **Workflow friction** | Slow phase, confusing output, unnecessary back-and-forth |
+
+### 7b. Send pipeline health DM
+
+Use Slack MCP to DM Robbie at user ID `U093RE9TDV4`:
+
+```
+🔧 *Pipeline Health — w/c [date]*
+
+*Status*: ✅ Clean run / ⚠️ Issues encountered
+
+*Issues*
+• [Phase X — category]: [what happened] → [how resolved]
+• [Phase X — category]: [what happened] → [still unresolved]
+...
+
+*Suggestions for improvement*
+• [concrete suggestion to avoid issue X in future]
+• [concrete suggestion to make phase Y smoother]
+...
+
+*Stats*
+• Phases completed: X/7
+• Agent launches: X (Y retries)
+• User corrections: X
+• Time estimate: ~Xm
+```
+
+If the run was completely clean with no issues, still send a brief message confirming success:
+
+```
+🔧 *Pipeline Health — w/c [date]*
+✅ Clean run — no issues encountered. All 7 phases completed successfully.
+```
 
 ---
 
 ## Error Handling
 
-- **Tesco not logged in**: Use the OTP flow described in Phase 5a. If that fails, ask the user to log in manually.
-- **Product not found**: Log it, continue with remaining items, report at the end.
-- **Chrome MCP unavailable**: Skip browser phases, output the shopping list for manual use.
+- **Agent fails**: Report the error to the user. Offer to retry or skip that phase.
+- **Tesco not logged in**: The tesco-basket agent handles OTP. If that fails, ask the user to log in manually via `! open https://www.tesco.com/groceries/`.
+- **Chrome MCP unavailable**: Skip browser phases (Tesco + Keep), output the shopping list for manual use.
 - **Notion query fails**: Retry once, then report the error and continue with available data.
-- **Budget significantly over**: Flag it during Phase 4 verification and suggest substitutions.
-- **Recipe has no ingredients**: Fetch from Source URL if available, or ask the user.
+- **Budget significantly over**: Flag during Phase 2 and suggest substitutions.
+- **Recipe has no ingredients**: The ingredient-calc agent handles this (WebFetch fallback or skip).
+- **Python utility error**: If a code fix is needed, fix the bug in the source file, run `python3 -m pytest` to confirm, then continue. Log the fix as a pipeline issue.
