@@ -28,7 +28,7 @@ The orchestrator will provide:
 - **Shopping list**: final confirmed items with quantities
 - **Basket contents**: actual products purchased, prices, quantities
 - **Regular items ordered**: which regular items were included
-- **User feedback**: any feedback from the Slack review or in-conversation corrections
+- **User feedback**: any feedback from the user review or in-conversation corrections
 - **Issues encountered**: any problems during the workflow (for learning)
 
 ## Updates by Database

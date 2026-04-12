@@ -1,6 +1,6 @@
 ---
 name: weekly-shop
-description: Run the weekly supermarket shopping workflow — selects recipes, calculates ingredients, checks pantry, builds a Tesco basket via Chrome browser automation, reads the Google Keep shopping list, and sends a Slack review DM. Use this skill whenever the user says "weekly shop", "do the shopping", "meal plan", "what should we cook this week", "what's for dinner", "order groceries", "Tesco order", "shopping list", "grocery list", "plan meals", "do the Tesco shop", or anything related to planning meals and ordering groceries for the week. Also trigger when the user mentions specific phases like "add items to Tesco", "check the pantry", "what do we need from the shops", or "build the basket". Even casual prompts like "food for next week?" or "can you sort the shopping" should trigger this skill.
+description: Run the weekly supermarket shopping workflow — selects recipes, calculates ingredients, checks pantry, builds a Tesco basket via Chrome browser automation, reads the Google Keep shopping list, and communicates via Telegram. Use this skill whenever the user says "weekly shop", "do the shopping", "meal plan", "what should we cook this week", "what's for dinner", "order groceries", "Tesco order", "shopping list", "grocery list", "plan meals", "do the Tesco shop", or anything related to planning meals and ordering groceries for the week. Also trigger when the user mentions specific phases like "add items to Tesco", "check the pantry", "what do we need from the shops", or "build the basket". Even casual prompts like "food for next week?" or "can you sort the shopping" should trigger this skill.
 ---
 
 # Weekly Shop — Orchestrator
@@ -39,8 +39,17 @@ You are running the weekly supermarket shopping workflow for Robbie. This workfl
 | Regular Items | `collection://0d4931a0-e4bb-49ab-a81a-434f31812161` |
 | Order History | `collection://f0d2230e-73d9-4ace-a302-01415a50c8cc` |
 
-### Slack
-Robbie's Slack user ID: `U093RE9TDV4`. DM him directly.
+### Telegram — Primary Communication Channel
+
+ALL user-facing questions, confirmations, and presentations are sent as **Telegram messages** in this conversation. This includes:
+- Phase 1c: meal plan proposal
+- Phase 2b: shopping list & pantry assumptions
+- Phase 4b: Google Keep items
+- Phase 5b: final review summary
+- Phase 6a: checkout confirmation
+- Phase 7b: pipeline health report
+
+**Interaction model**: After sending a confirmation request, **STOP** — do not continue to the next phase. The user's next Telegram message will arrive as a new turn with full conversation context. Resume from where you left off.
 
 ### Pipeline Issue Tracking
 Throughout every phase, keep a running log of **all issues encountered** — even ones you found workarounds for. Record:
@@ -50,6 +59,29 @@ Throughout every phase, keep a running log of **all issues encountered** — eve
 - Suggestions for improving the workflow to avoid this in future
 
 This log is used in Phase 7 for the pipeline health report.
+
+---
+
+## Turn Resumption Logic
+
+This workflow spans multiple conversation turns. At the start of each turn:
+
+1. If the user says "weekly shop" (or trigger phrase) and no workflow is in progress → **Start from Phase 0**
+2. If the user specifies "start from Phase X" → **Skip to that phase**
+3. If the conversation history shows a confirmation was sent and the user just replied → **Resume from the phase after that gate**
+
+**Confirmation gates** (workflow pauses here, resumes on next user message):
+- After Phase 1c → user approves/modifies meal plan → resume at Phase 1d
+- After Phase 2b → user approves/modifies shopping list → resume at Phase 3
+- After Phase 4b → user selects Keep items → resume at Phase 4c
+- After Phase 5b → user approves/modifies final review → resume at Phase 6
+
+**Autonomous runs** (no pause between these phases):
+- Phase 0 → 1a → 1b → 1c (**GATE**)
+- Phase 1d → 2a → 2b (**GATE**)
+- Phase 3a → 3b → 3c → 3d → 4a → 4b (**GATE**)
+- Phase 4c → 5a → 5b (**GATE**)
+- Phase 5c → 6 → 7 (finish)
 
 ---
 
@@ -99,31 +131,35 @@ From the candidates the agent returned, build a **cooking schedule** — not a l
 4. **Use up fridge ingredients** — prefer recipes flagged by the scorer as using perishable items.
 5. **Apply Notes and Learnings** — skip recipes with negative Notes, prefer those with positive Notes.
 
-### 1c. Present to user
+### 1c. Present to user — CONFIRMATION GATE
+
+Send the cooking schedule as a Telegram message. Format:
 
 ```
-🍽️ **Dinner Plan** (X cooking sessions)
+🍽️ Dinner Plan (X cooking sessions)
 
 Batch cooks:
-- Beef Chili ×3 (8 portions → Mon–Thu dinners)
+• Beef Chili ×3 (8 portions → Mon–Thu dinners)
 
 Quick cooks:
-- Chicken Stir Fry (Fri, 20 min) — uses fridge chicken
-- Fish Tacos (Sat, 25 min)
-- Omelette (Sun, 15 min)
+• Chicken Stir Fry (Fri, 20 min) — uses fridge chicken
+• Fish Tacos (Sat, 25 min)
+• Omelette (Sun, 15 min)
 
-🥗 **Lunch Plan** (X cooking sessions)
+🥗 Lunch Plan (X cooking sessions)
 
 Batch cook:
-- Chicken & Rice Bowls ×2 (8 portions → Mon–Thu)
+• Chicken & Rice Bowls ×2 (8 portions → Mon–Thu)
 
 Quick:
-- Wraps (Fri, 10 min)
+• Wraps (Fri, 10 min)
 
 📊 Cooking sessions: X | Fridge items used: Y
+
+Reply with changes or "looks good" to proceed.
 ```
 
-**WAIT FOR USER CONFIRMATION.** The user may swap recipes, adjust multipliers, or approve as-is.
+**STOP HERE.** Do not continue to Phase 1d. Wait for the user's next message. They may swap recipes, adjust multipliers, or approve as-is. When they reply, apply any changes and continue to Phase 1d.
 
 ### 1d. Create meal plan in Notion
 
@@ -143,28 +179,35 @@ Include in the agent prompt:
 
 The agent will return: aggregated shopping list, pantry assumptions, budget estimate, and sanity-check flags.
 
-### 2b. Present to user
+### 2b. Present to user — CONFIRMATION GATE
+
+Send the shopping list as a Telegram message. Format:
 
 ```
-**Pantry assumptions** (please correct any that are wrong):
-- Rice: have 500g → need 1.5kg → buying 1kg ✓
-- Olive oil: have full bottle → not buying ✓
+🛒 Shopping List — w/c [date]
+
+Pantry assumptions (reply with corrections):
+• Rice: have 500g → need 1.5kg → buying 1kg ✓
+• Olive oil: have full bottle → not buying ✓
 ...
 
-**Shopping list** (X items):
+Shopping list (X items):
 [formatted list grouped by category]
 
-**Budget estimate**: ~£XX (target: £50)
+Budget estimate: ~£XX (target: £50)
 
-**Sanity check flags**:
-- ⚠️ 675g chicken breast — verify across 3 recipes
+Sanity check flags:
+• ⚠️ 675g chicken breast — verify across 3 recipes
 ...
+
+Reply with corrections or "looks good" to proceed.
 ```
 
-**WAIT FOR USER RESPONSE.** Apply any corrections:
+**STOP HERE.** Do not continue to Phase 3. Wait for the user's next message. When they reply, apply any corrections:
 - If pantry quantities are wrong, note the corrections (the db-updater agent will update Notion later)
 - If items should be added/removed, adjust the list
 - Recalculate budget estimate if the list changed significantly
+Then continue to Phase 3.
 
 ---
 
@@ -223,19 +266,21 @@ Read `.claude/agents/google-keep-reader.md` and launch a **general-purpose Agent
 
 The agent will return the list of unchecked items from the "Household shopping list".
 
-### 4b. Present to user
+### 4b. Present to user — CONFIRMATION GATE
+
+Send the Keep items as a Telegram message. Format:
 
 ```
-**Google Keep items found:**
-- Kitchen roll
-- Bin bags
-- Bananas
+📝 Google Keep items found:
+• Kitchen roll
+• Bin bags
+• Bananas
 ...
 
 Which of these should I add to the Tesco basket?
 ```
 
-**WAIT FOR USER CONFIRMATION.**
+**STOP HERE.** Do not continue to Phase 4c. Wait for the user's next message indicating which items to add. Then continue to Phase 4c.
 
 ### 4c. Add confirmed Keep items to Tesco
 
@@ -243,40 +288,43 @@ Re-launch the **tesco-basket agent** with the confirmed Keep items. Include any 
 
 ---
 
-## Phase 5 — Slack Review
+## Phase 5 — Final Review
 
 ### 5a. Compile summary
 
-Build a comprehensive summary from all phases:
+Build a comprehensive summary from all phases.
+
+### 5b. Present to user — CONFIRMATION GATE
+
+Send the summary as a Telegram message. Format:
 
 ```
-🛒 *Weekly Shop — w/c [date]*
+🛒 Weekly Shop — w/c [date]
 
-*🍽️ Dinners*
-• Mon: [recipe] _(cuisine)_
-• Tue: [recipe] _(cuisine)_
+🍽️ Dinners
+• Mon: [recipe] (cuisine)
+• Tue: [recipe] (cuisine)
 ...
 
-*🥗 Lunches*
-• [recipe] _(tags)_
+🥗 Lunches
+• [recipe] (tags)
 ...
 
-*🛒 Basket Summary*
+🛒 Basket Summary
 [X] items | Est. £[total] (budget: £50)
 [list any missing/out-of-stock items]
 
-✅ _Reply with changes or "looks good" to proceed._
+Reply with changes or "looks good" to proceed.
 ```
 
-### 5b. Send to Robbie
-
-Use Slack MCP to DM Robbie at user ID `U093RE9TDV4`.
+**STOP HERE.** Do not continue to Phase 6. Wait for the user's next message.
 
 ### 5c. Process feedback
 
-If the user responds with changes:
-- Apply substitutions/removals/additions on Tesco via the tesco-basket agent
+When the user replies:
+- If they request changes, apply substitutions/removals/additions on Tesco via the tesco-basket agent
 - Note all feedback for the db-updater agent (recipe feedback → Notes, brand preferences → Shopping Preferences, etc.)
+- Then continue to Phase 6.
 
 ---
 
@@ -284,7 +332,7 @@ If the user responds with changes:
 
 ### 6a. Confirm ready
 
-Tell the user: "Your basket is ready for checkout. I've left the Tesco tab open — you can choose a delivery slot and place the order."
+Send a Telegram message: "Your basket is ready for checkout. I've left the Tesco tab open — you can choose a delivery slot and place the order."
 
 ### 6b. Launch db-updater agent
 
@@ -318,9 +366,9 @@ Review your running issue log from all phases. For each issue, categorise it:
 | **User corrections** | Pantry assumptions wrong, quantities adjusted, items added/removed |
 | **Workflow friction** | Slow phase, confusing output, unnecessary back-and-forth |
 
-### 7b. Send pipeline health DM
+### 7b. Send pipeline health report
 
-Use Slack MCP to DM Robbie at user ID `U093RE9TDV4`:
+Send as a Telegram message:
 
 ```
 🔧 *Pipeline Health — w/c [date]*
