@@ -14,7 +14,6 @@ This is **idempotent** — recipes that already have ingredients and instruction
 |----------|---------------|
 | Recipes | `collection://c484fc86-6058-4c7c-9c82-af7d9830b1db` |
 | Recipe Ingredients | `collection://f59cef18-fcbf-448c-91f2-a8f2aada5b8d` |
-| Ingredients | `collection://c335d5eb-d770-40e7-8386-fea913fa5f74` |
 
 Use `mcp__792c926c-2a2b-479f-8cd0-5959ff5aebc2__notion-query-data-sources` to query and `mcp__792c926c-2a2b-479f-8cd0-5959ff5aebc2__notion-create-pages` / `mcp__792c926c-2a2b-479f-8cd0-5959ff5aebc2__notion-update-page` to write.
 

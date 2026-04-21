@@ -13,7 +13,7 @@ You are running the weekly supermarket shopping workflow for Robbie. This workfl
 
 ### Household Profile
 - 2 people, large portions (~1.5x recipe servings)
-- Min 50g protein per serving; ~200g meat per serving if meat-based
+- Min 50g protein per serving; ~150g meat per serving when meat is the main protein source
 - Allergies: nuts, coconut, poppy seeds (direct ingredients only; "may contain" is fine)
 - Budget: ~£50/week, prefer value/own-brand options
 - **Cooking efficiency**: limited time, cook as efficiently as possible
@@ -28,16 +28,13 @@ You are running the weekly supermarket shopping workflow for Robbie. This workfl
 
 | Database | Data Source ID |
 |----------|---------------|
-| Ingredients | `collection://c335d5eb-d770-40e7-8386-fea913fa5f74` |
 | Recipes | `collection://c484fc86-6058-4c7c-9c82-af7d9830b1db` |
-| Meal Plans | `collection://47c69634-05b4-4dd9-85f5-7cac12e64798` |
+| Order History (formerly Meal Plans) | `collection://47c69634-05b4-4dd9-85f5-7cac12e64798` |
 | Learnings | `collection://b1e318ba-3e4d-46d6-8749-ca166e60925c` |
 | Recipe Ingredients | `collection://f59cef18-fcbf-448c-91f2-a8f2aada5b8d` |
 | Pantry Inventory | `collection://8639fbc8-fd73-4933-8e29-24c4a7ae3d07` |
-| Meal Plan Entries | `collection://a16f20fc-a485-4f7d-8199-378cc6d65edc` |
 | Shopping Preferences | `collection://e9cccfe4-5e5a-45bc-815d-19ef94719e4e` |
 | Regular Items | `collection://0d4931a0-e4bb-49ab-a81a-434f31812161` |
-| Order History | `collection://f0d2230e-73d9-4ace-a302-01415a50c8cc` |
 
 ### Telegram — Primary Communication Channel
 
@@ -163,7 +160,54 @@ Reply with changes or "looks good" to proceed.
 
 ### 1d. Create meal plan in Notion
 
-After confirmation, create a new Meal Plan entry and individual Meal Plan Entries for each day/meal. For batch cooks, create one entry for the cooking day and mark subsequent days as leftovers.
+After confirmation, create a new Meal Plan page in the **Order History** DB (the renamed Meal Plans DB) with:
+- **Properties**: Week title (e.g. "w/c 14 Apr 2026"), Status = "Planning", Start Date
+- **Page content**: The recipe summary table followed by a per-recipe ingredient breakdown.
+
+Note: Phase 1d creates the page with the recipe summary table only. The **ingredient breakdown section is added later in Phase 2c** (after ingredient-calc runs), since it needs the scaled/adjusted ingredient data.
+
+Phase 1d initial page content:
+
+```markdown
+## Recipes
+
+| Recipe | Multiplier | Expected Servings | Role |
+|--------|-----------|-------------------|------|
+| [Catalan Beef](recipe-url) | ×2 | ~8 portions | Batch dinner |
+| [Miso Salmon Traybake](recipe-url) | ×1 | ~2 portions | Quick dinner |
+...
+
+## Summary
+
+- **Cooking sessions**: X
+- **Dinners covered**: 7 days
+- **Lunches covered**: 5 days
+- **Budget target**: £50
+```
+
+Each recipe name should be a Notion link to its recipe page.
+
+### 2c. Append ingredient breakdown to meal plan page
+
+After ingredient-calc finishes in Phase 2a and the shopping list is confirmed in 2b, append an ingredient breakdown section to the meal plan page using `notion-update-page` with `command: "update_content"`. For each recipe, show the **scaled ingredient quantities** (after multiplier and any Notes adjustments). Format:
+
+```markdown
+---
+
+## Ingredient Breakdown by Recipe
+
+### [Recipe Name](recipe-url) — ×N
+
+*Notes applied: [any adjustments, e.g. "doubled garlic per notes", "coconut oil → ghee (allergen)"]*
+
+| Ingredient | Qty | Notes |
+|-----------|-----|-------|
+| Braising beef | 2kg | |
+| Onion | 2 large | |
+...
+```
+
+This makes it clear for each dish exactly what was bought and in what quantity, and which ingredients were swapped or adjusted.
 
 ---
 
@@ -220,10 +264,7 @@ Query Shopping Preferences for all items on the shopping list:
 SELECT * FROM "collection://e9cccfe4-5e5a-45bc-815d-19ef94719e4e"
 ```
 
-Also query Ingredients DB for relevant Notes:
-```sql
-SELECT * FROM "collection://c335d5eb-d770-40e7-8386-fea913fa5f74"
-```
+(The separate Ingredients DB has been retired — brand/value notes now live in Shopping Preferences.)
 
 ### 3b. Launch tesco-basket agent
 
@@ -231,8 +272,7 @@ Read `.claude/agents/tesco-basket.md` and launch a **general-purpose Agent** wit
 
 Include in the agent prompt:
 - The confirmed shopping list (items, quantities, units)
-- Shopping Preferences for each item (preferred brand, Tesco search term, price sensitivity)
-- Relevant Ingredient Notes (brand advice, product form preferences)
+- Shopping Preferences for each item (preferred brand, Tesco search term, price sensitivity, general notes)
 
 The agent will return a per-item report of successes and failures.
 

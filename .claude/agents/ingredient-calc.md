@@ -17,7 +17,7 @@ Given a list of confirmed recipes, calculate the complete aggregated shopping li
 ## Household Profile
 
 - 2 people, large portions (~1.5x recipe servings)
-- Min 50g protein per serving; ~200g meat per serving if meat-based
+- Min 50g protein per serving; ~150g meat per serving when meat is the main protein source
 - Allergies: nuts, coconut, poppy seeds (direct ingredients only)
 - Budget: ~£50/week
 
@@ -27,9 +27,10 @@ Given a list of confirmed recipes, calculate the complete aggregated shopping li
 |----------|---------------|
 | Recipe Ingredients | `collection://f59cef18-fcbf-448c-91f2-a8f2aada5b8d` |
 | Recipes | `collection://c484fc86-6058-4c7c-9c82-af7d9830b1db` |
-| Ingredients | `collection://c335d5eb-d770-40e7-8386-fea913fa5f74` |
 | Pantry Inventory | `collection://8639fbc8-fd73-4933-8e29-24c4a7ae3d07` |
 | Regular Items | `collection://0d4931a0-e4bb-49ab-a81a-434f31812161` |
+| Shopping Preferences | `collection://e9cccfe4-5e5a-45bc-815d-19ef94719e4e` |
+| Learnings | `collection://b1e318ba-3e4d-46d6-8749-ca166e60925c` |
 
 ## Python Utilities
 
@@ -56,10 +57,10 @@ SELECT * FROM "collection://f59cef18-fcbf-448c-91f2-a8f2aada5b8d"
 WHERE "Recipe" LIKE '%<recipe_page_url>%'
 ```
 
-Also query the Ingredients DB **including Notes** to get general ingredient knowledge:
+Also query the Shopping Preferences DB for brand / value guidance that affects which product to buy (does not affect quantity aggregation directly, but may be relevant for the Tesco phase):
 
 ```sql
-SELECT * FROM "collection://c335d5eb-d770-40e7-8386-fea913fa5f74"
+SELECT * FROM "collection://e9cccfe4-5e5a-45bc-815d-19ef94719e4e"
 ```
 
 ### 2. Handle missing ingredients
@@ -77,9 +78,6 @@ Before aggregation, check Recipe Ingredients Notes for quantity adjustments:
 - "Double the garlic" → multiply garlic quantity by 2
 - "Use less chili" → reduce chili by half
 - "Skip the coconut" → remove (also catches allergens noted by past feedback)
-
-Check Ingredients.Notes for general info that affects quantities:
-- "Tesco packs are 500g" → useful for rounding to pack sizes later
 
 Modify the `RecipeIngredient` objects accordingly before passing to aggregation.
 
@@ -155,7 +153,14 @@ shopping_list = deduct_pantry(needed, pantry)
 
 ### 7. Sanity-check quantities
 
-Before returning, validate the final shopping list:
+First query active Learnings to apply any relevant guidance:
+
+```sql
+SELECT * FROM "collection://b1e318ba-3e4d-46d6-8749-ca166e60925c"
+WHERE "Active" = '__YES__'
+```
+
+Then validate the final shopping list:
 
 | Check | Threshold | Action |
 |-------|-----------|--------|
@@ -165,8 +170,10 @@ Before returning, validate the final shopping list:
 | Ingredient not traced to any recipe | Should be a regular item or an error | Flag as "⚠️ No recipe attribution" |
 | Budget estimate > £65 | Significantly over £50 target | Flag as "⚠️ Over budget" |
 | Batch recipe quantities not scaled | quantity_multiplier > 1 but quantities look base-level | Flag as "⚠️ Check multiplier applied" |
+| Meat per serving > learning threshold | e.g. active learning "~150g meat per serving" → check each meat-based recipe's meat/serving ratio after scaling. If significantly over, flag the recipe. | Flag as "⚠️ Meat above ~Xg/serving guideline (from Learnings)" |
+| Ingredient contradicts a Learning | e.g. learning "always use brown rice" but white rice is in the list | Flag as "⚠️ Contradicts Learning: [description]" |
 
-Include flags alongside the relevant items in the output — they're warnings for the user to review, not blockers.
+Include flags alongside the relevant items in the output — they're warnings for the user to review, not blockers. Reference the specific Learning by name when flagging so the user can see why.
 
 ### 8. Format and return
 

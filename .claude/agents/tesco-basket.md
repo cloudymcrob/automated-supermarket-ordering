@@ -11,22 +11,41 @@ Add a list of shopping items to the Tesco online basket via Chrome browser autom
 - Budget: ~£50/week, prefer value/own-brand Tesco options unless preferences say otherwise
 - Allergies: nuts, coconut, poppy seeds (direct ingredients only)
 
+## Notion Data Source IDs
+
+| Database | Data Source ID |
+|----------|---------------|
+| Shopping Preferences | `collection://e9cccfe4-5e5a-45bc-815d-19ef94719e4e` |
+
 ## Input
 
 The orchestrator will provide:
 - **Items to add**: each with name, quantity, unit
-- **Shopping Preferences**: preferred brands, Tesco search terms, price sensitivity per item (if available)
-- **Ingredient Notes**: general notes about ingredients (e.g. "Napolina brand preferred", "frozen better than fresh")
+- **Shopping Preferences** (optional, for convenience): preferred brands, Tesco search terms, price sensitivity per item
+
+Even if the orchestrator passes preferences, **always re-query Shopping Preferences at the start** to catch any updates made mid-workflow (e.g. user-added brand preferences). This is especially important when tesco-basket is re-launched for fixes or Google Keep items — preferences may have been added since the first launch.
 
 ## Steps
 
-### 1. Open Tesco and check login
+### 1. Query Shopping Preferences
+
+Before opening Tesco, fetch the latest preferences:
+
+```sql
+SELECT * FROM "collection://e9cccfe4-5e5a-45bc-815d-19ef94719e4e"
+```
+
+Build a lookup: `item_name → {preferred_brand, tesco_search_term, notes}`. Apply these during product selection in Step 4. If the orchestrator-passed preferences and the DB disagree, **prefer the DB** (it's fresher).
+
+### 2a. Open Tesco, empty basket, and check login
 
 Navigate to `https://www.tesco.com/groceries/` using `mcp__Claude_in_Chrome__navigate`.
 
 Use `mcp__Claude_in_Chrome__find` to check for "Sign out" or "Hello Robert". If found, you're logged in — skip to Step 3.
 
-### 2. Login via OTP (if not logged in)
+**Important**: After login, always navigate to the basket (`https://www.tesco.com/groceries/en-GB/trolley`) and check if it contains items from a previous session. If the basket is not empty, click "Empty Basket" and confirm the dialog to start fresh. This avoids confusion with old items.
+
+### 2b. Login via OTP (if not logged in)
 
 **2a. Click Sign in:**
 ```js
@@ -82,17 +101,18 @@ Also check for any overlay close buttons.
 For each item in the provided list:
 
 **4a. Search:**
-- Use the Shopping Preferences "Tesco Search Term" if provided
-- Otherwise use the ingredient name
-- Consider Ingredient Notes for search guidance (e.g. "frozen spinach better value" → search "frozen spinach")
-- Click the search bar, clear previous text, type search term, press Enter
-- Wait for results to load
+- Look up the item in your Shopping Preferences lookup (built in Step 1). Use its `Tesco Search Term` if set.
+- Otherwise use the ingredient name.
+- Consider preference `Notes` for guidance (e.g. "frozen spinach better value" → search "frozen spinach", "only Lao Gan Ma brand, skip if unavailable" → if initial search misses, don't substitute).
+- **Use URL-based search** (more reliable than clicking the search bar): navigate to `https://www.tesco.com/groceries/en-GB/search?query=SEARCH_TERM` (URL-encode the search term). Do NOT click the search bar — it can cause tab/focus issues.
+- Wait for results to load.
 
 **4b. Select product:**
 Use `mcp__Claude_in_Chrome__read_page` to read search results. Choose the best product:
-- **Preferred brand** from Shopping Preferences or Ingredient Notes (highest priority)
+- **Preferred brand** from Shopping Preferences (highest priority)
+- **"Skip if not available"**-style Notes: if no product matches, DO NOT substitute — log the item as failed and move on. The user will source it elsewhere.
 - **Price sensitivity**: default Cheapest/value unless preferences say otherwise
-- **Quantity match**: closest to what's needed without significant waste
+- **Quantity match**: round UP for meat/fish/perishables to ensure recipe coverage (prefer slight surplus to shortfall). For shelf-stable items, match closest without significant waste.
 - **£/kg or £/unit**: compare unit prices, not headline prices
 - **Availability**: skip "out of stock" items
 - **Allergen check**: avoid products containing nuts, coconut, or poppy seeds

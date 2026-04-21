@@ -9,7 +9,7 @@ Score and rank all active recipes by recency, then return candidates for the orc
 ## Household Profile
 
 - 2 people, large portions (~1.5x recipe servings)
-- Min 50g protein per serving; ~200g meat per serving if meat-based
+- Min 50g protein per serving; ~150g meat per serving when meat is the main protein source
 - Allergies: nuts, coconut, poppy seeds (direct ingredients only; "may contain" is fine)
 - Budget: ~£50/week, prefer value options
 - Cooking efficiency: every dish should be Quick (≤40 min), Batch (bulk cook), or Both
@@ -21,9 +21,11 @@ Score and rank all active recipes by recency, then return candidates for the orc
 | Database | Data Source ID |
 |----------|---------------|
 | Recipes | `collection://c484fc86-6058-4c7c-9c82-af7d9830b1db` |
+| Recipe Ingredients | `collection://f59cef18-fcbf-448c-91f2-a8f2aada5b8d` |
 | Learnings | `collection://b1e318ba-3e4d-46d6-8749-ca166e60925c` |
-| Meal Plan Entries | `collection://a16f20fc-a485-4f7d-8199-378cc6d65edc` |
+| Order History (formerly Meal Plans) | `collection://47c69634-05b4-4dd9-85f5-7cac12e64798` |
 | Pantry Inventory | `collection://8639fbc8-fd73-4933-8e29-24c4a7ae3d07` |
+| Shopping Preferences | `collection://e9cccfe4-5e5a-45bc-815d-19ef94719e4e` |
 
 ## Python Utilities
 
@@ -63,12 +65,14 @@ Also read each recipe's `Cook Style` (Quick / Batch / Both) and `Quantity Multip
 
 ### 3. Get recent meal plan history
 
+Query the most recent meal plans:
+
 ```sql
-SELECT * FROM "collection://a16f20fc-a485-4f7d-8199-378cc6d65edc"
-ORDER BY createdTime DESC LIMIT 30
+SELECT * FROM "collection://47c69634-05b4-4dd9-85f5-7cac12e64798"
+ORDER BY createdTime DESC LIMIT 5
 ```
 
-Extract recipe names from recent entries to avoid repeats.
+Then use the `notion-fetch` tool to read the **page content** of the most recent 1-2 meal plans. The page content contains a table of recipes with links. Extract recipe names from these to avoid repeats.
 
 ### 4. Check fridge for ingredients that need using up
 
@@ -113,7 +117,25 @@ from datetime import date
 
 You MUST use the `score_recipes()` function. Do NOT manually assign scores.
 
-### 6. Apply Notes-based and fridge-based adjustments
+### 6. Load ingredient & sourcing context
+
+**6a. Fetch Recipe Ingredients** for cross-referencing with fridge items:
+
+```sql
+SELECT "Ingredient Line", "Recipe" FROM "collection://f59cef18-fcbf-448c-91f2-a8f2aada5b8d"
+```
+
+Build a reverse index: `ingredient_name → [recipe URLs that use it]`. You'll use this in Step 7 to identify which recipes can use up fridge items.
+
+**6b. Fetch Shopping Preferences** to identify hard-to-source ingredients:
+
+```sql
+SELECT * FROM "collection://e9cccfe4-5e5a-45bc-815d-19ef94719e4e"
+```
+
+Note any preferences with notes like "skip if not available" or "only buy from [brand X]" — recipes depending on these ingredients should be slightly deprioritised because they may fail sourcing.
+
+### 7. Apply Notes-based and fridge-based adjustments
 
 After Python scoring:
 
@@ -123,11 +145,15 @@ After Python scoring:
 - Apply active Learnings (e.g. "more fish this month" → boost fish recipes)
 
 **Fridge ingredient awareness:**
-- For each item on the "use up" list, check which recipes use that ingredient
+- For each item on the "use up" list, use the reverse index from Step 6a to find recipes that use that ingredient
 - Boost those recipes by 10-15 points and flag them as "uses fridge ingredient: X"
 - This is especially important for perishable proteins (chicken, mince, fish) approaching expiry
 
-### 7. Return results
+**Sourcing risk adjustment:**
+- If a recipe relies on an ingredient flagged in Shopping Preferences as hard-to-source (e.g. "skip if unavailable"), reduce the score by 5 points and flag it
+- This helps the orchestrator prefer recipes that will actually get filled in the basket
+
+### 8. Return results
 
 Return candidates **separated by cook style** so the orchestrator can plan cooking sessions:
 
